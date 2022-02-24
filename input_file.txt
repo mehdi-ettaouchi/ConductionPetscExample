@@ -1,0 +1,14 @@
+nombre de noeuds total
+100
+nombre de sous domaines
+10
+température à gauche
+0
+température à droite
+10
+coeff de diffusion
+1
+temps final
+1
+longueur du domaine
+1
