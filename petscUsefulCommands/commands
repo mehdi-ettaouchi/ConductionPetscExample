@@ -1,0 +1,123 @@
+
+
+-----------------------------IS---------------------------------
+# create an is from a start point with defined step
+
+PETSc.IS().createStride(IndexSetSize, 
+            first=IndexSetFirst, step=1, comm=MPI.COMM_WORLD)
+
+-----------------------------vec--------------------------------
+# creating a vector by determining a number of elements for each proc
+
+PETSC.Vec().createMPI((numberOfElementsForThisProc,GlobalSize),comm=CommunicatorOfParticipatingProcs)
+
+# get the range of elements that the proc own 
+
+PETScVector.getOwnershipRange()
+
+# set all elements of a vec to single value
+
+PETScVector.set(value)
+
+# assemble vector after setting its values
+
+PETScVector.assemble()
+
+# duplicate a vector
+
+duplicatedV=V.duplicate() (useful to create where to store a result)
+
+# create a copy 
+
+V.copy()
+
+# extract a vector
+
+V.getSubVector(ISOfIndexesToExtract)
+
+# combination of a list of PETSc vectors (V= V+sum alph[i] X[i])
+
+V.maxpy( listOfCoeffs (alpha) , listOfVectors (X) )
+
+-----------------------------Mat--------------------------------
+
+# get the size of the bloc Matrix owned by a proc
+
+nbRows,nbCols = thePETScMAtrix.getSize()
+
+# get the vector left and right vectors : 
+
+left is a vec with the same parallel layout where the matrix product can be stored in :
+
+        thePETScMatrix.getVecLeft()
+
+right is a vec with the same parallel layout that can do a product with the matrix
+    
+        thePETScMatrix.getVecRight()
+
+To get them both :
+
+        VecRight,VecLeft=thePETScMatrix.getVecs()
+
+# get a column vector from a matrix
+
+thePETScMatrix.getColumnVector(columnNumber, vectorToStoreTheColumnIn)
+
+# Get range of rows owned by a proc on a matrix
+
+start,end = ThePETScMatrix.getOwnershipRange()
+
+# set values 
+
+thePETScMatrix.setValues(ArrayOfRowIndexes, ArrayOfColIndexes)
+
+# set diagonal values of a Matrix
+
+PETScMatrix.setDiagonal( DiagVec )     don't forget to assemble
+
+# assembling Matrix
+
+PETScMatrix.assemble()
+
+# do Y <-- A x
+
+A.mult(X,Y)
+
+# do Y <-- A^T x
+
+A.multTranspose(X,Y)
+
+# do Z <-- A X + Y
+
+A.multAdd(X,Y,Z)
+
+# do P^T A
+
+A.transposeMatMult(P)
+
+# do P^T A P to a matrix
+
+PtAP= A.PtAP(P)
+
+
+-----------------------------scatter----------------------------
+# creating a scatter between two MPI.COMM_WORLD vecs
+
+Scatter = PETSc.Scatter().create(vectorA, 
+            the IS of indexes of elements on A that This proc will have on B, vectorB, the IS of indexes of elements on A that This proc will have on B)
+
+# use a scatter
+VecScatter.scatter(vect)
+-----------------------------COMM--------------------------------
+
+# get the communicator
+
+PETScCOMM=Mat/vec.getComm()
+
+# convert a Comm to mpi4py COMM Type
+
+PETScCOMM.tompi4py()    
+
+# split a comminucator
+
+subComm= glbComm.Split( bool thisProcIsOnSubComm , int procRank )

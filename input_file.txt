@@ -1,7 +1,7 @@
 nombre de noeuds total
-100
-nombre de sous domaines
 10
+nombre de sous domaines
+5
 température à gauche
 0
 température à droite
