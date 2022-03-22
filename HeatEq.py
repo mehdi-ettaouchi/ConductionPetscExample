@@ -1,13 +1,14 @@
 from lib2to3.pytree import convert
 from math import perm
 from pipes import Template
-from re import I
+from re import I, search
 from statistics import mode
 from traceback import print_tb
 from tracemalloc import DomainFilter
 from defer import return_value
 import numpy as np
 from mpi4py import MPI
+from pyparsing import col
 from petsc4py import PETSc
 import sys
 import petsc4py
@@ -33,7 +34,7 @@ class HeatEqSolver:
         self.Sol=PETSc.Vec().createMPI(size=self.DomainSize,comm=MPI.COMM_WORLD)
         self.localMatrix=self.buildLocalMatrix()
         self.LGMapping=self.buildLocToGlbMapping()
-        self.Sol.setLGMap(self.buildLocToGlbMapping())
+        self.Sol.setLGMap(self.LGMapping[1])
         self.Sol.getArray()[:]=0
         self.Sol.assemble()
         self.glbMatrix=self.buildGlbMatrix()
@@ -49,7 +50,7 @@ class HeatEqSolver:
         GlbMatrix.setSizes(self.DomainSize)
         GlbMatrix.setType(PETSc.Mat.Type.IS)
         LocToGlbMapping = self.LGMapping
-        GlbMatrix.setLGMap(LocToGlbMapping)
+        GlbMatrix.setLGMap(LocToGlbMapping[0],LocToGlbMapping[1])
         LocMatrix = self.localMatrix
         GlbMatrix.setISLocalMat(LocMatrix)
         GlbMatrix.assemble()
@@ -62,6 +63,7 @@ class HeatEqSolver:
         rank = self.getProcId()
         localSize = self.DomainSize//self.NumberOfSd
         sdIndices = np.split(self.glbIndices, self.NumberOfSd)[rank]
+        rowSdIndices=sdIndices
         if rank > 0 and rank < self.NumberOfSd-1:
             sdIndices = np.concatenate((
                 sdIndices-localSize, sdIndices, sdIndices+localSize))
@@ -71,8 +73,10 @@ class HeatEqSolver:
             else:
                 sdIndices = np.concatenate((sdIndices-localSize, sdIndices))
         sdIndicesIs = PETSc.IS().createGeneral(sdIndices, comm=MPI.COMM_WORLD)
+        rowSdIndicesIs = PETSc.IS().createGeneral(rowSdIndices, comm=MPI.COMM_WORLD)
         LocGlbMaping = PETSc.LGMap().createIS(sdIndicesIs)
-        return LocGlbMaping
+        rowLocGlbMaping = PETSc.LGMap().createIS(rowSdIndicesIs)
+        return rowLocGlbMaping,LocGlbMaping
 
     def buildLocalMatrix(self):
         """
@@ -103,9 +107,9 @@ class HeatEqSolver:
     def sizeOfLocalMatrix(self):
         rank=self.getProcId()
         if rank>0 and rank < self.NumberOfSd-1:
-            return (3*self.sdSize,3*self.sdSize)
+            return (self.sdSize,3*self.sdSize)
         else:
-            return (2*self.sdSize,2*self.sdSize)
+            return (self.sdSize,2*self.sdSize)
     
     def getProcId(self):
         """
@@ -149,7 +153,6 @@ class HeatEqSolver:
             elif (i+1)%self.sdSize==0:
                 glbRHS[i]-=self.beta*self.rightTemperature
         PetscGlbRHS=PETSc.Vec().createWithArray(glbRHS,size=self.DomainSize,comm=MPI.COMM_WORLD)
-        PetscGlbRHS.setLGMap(self.buildLocToGlbMapping())
         PetscGlbRHS.assemble()
         return PetscGlbRHS
     
@@ -240,12 +243,12 @@ class localMatrixCtx:
         Res[:]=0
         for i in range(self.sdSize):
             if self.rank>0 and self.rank < self.NumberOfSd-1:
-                Res[self.sdSize+i]+=vecToMult[self.sdSize+i]*self.alpha
+                Res[i]+=vecToMult[self.sdSize+i]*self.alpha
                 if i>0:
-                    Res[self.sdSize+i]+=vecToMult[self.sdSize+i-1]*self.beta
+                    Res[i]+=vecToMult[self.sdSize+i-1]*self.beta
                 if i <self.sdSize-1:
-                    Res[self.sdSize+i]+=vecToMult[self.sdSize+i+1]*self.beta
-                Res[self.sdSize+i]+= vecToMult[i]*self.gamma +self.gamma*vecToMult[2*self.sdSize+i]
+                    Res[i]+=vecToMult[self.sdSize+i+1]*self.beta
+                Res[i]+= vecToMult[i]*self.gamma +self.gamma*vecToMult[2*self.sdSize+i]
             if self.rank==0:
                 Res[i]+=vecToMult[i]*self.alpha
                 if i>0:
@@ -254,12 +257,12 @@ class localMatrixCtx:
                     Res[i]+=vecToMult[i+1]*self.beta
                 Res[i]+=self.gamma*vecToMult[self.sdSize+i]
             if self.rank==self.NumberOfSd-1:
-                Res[self.sdSize+i]+=vecToMult[self.sdSize+i]*self.alpha
+                Res[i]+=vecToMult[self.sdSize+i]*self.alpha
                 if i>0:
-                    Res[self.sdSize+i]+=vecToMult[self.sdSize+i-1]*self.beta
+                    Res[i]+=vecToMult[self.sdSize+i-1]*self.beta
                 if i <self.sdSize-1:
-                    Res[self.sdSize+i]+=vecToMult[self.sdSize+i+1]*self.beta
-                Res[self.sdSize+i]+= vecToMult[i]*self.gamma
+                    Res[i]+=vecToMult[self.sdSize+i+1]*self.beta
+                Res[i]+= vecToMult[i]*self.gamma
 
 class PCLocalMatrixCtx:
     """
@@ -293,15 +296,17 @@ class MultiPreconditionedCG:
         self.SdNumber=self.DomainSize//self.sdSize
         self.sizeOfLocalMatrix=self.BaseSolver.sizeOfLocalMatrix()
         self.GlbMatrix=self.BaseSolver.getGlbMatrix()
+        self.glbSize=self.GlbMatrix.getSize()[0]
         self.PcIsMatrix=self.buildPC()
-        self.Solve(self.BaseSolver.getGlbRHS(),self.BaseSolver.getGlbRHS(),0.0001)
+        glbRHS=self.BaseSolver.getGlbRHS()
+        self.Solve(glbRHS,glbRHS,0.0001)
 
     def buildPC(self):
         Pc=PETSc.Mat().createPython(self.DomainSize,comm=MPI.COMM_WORLD)
         Pc.setType(PETSc.Mat.Type.IS)
         LocToGlbMapping=self.BaseSolver.buildLocToGlbMapping()
-        Pc.setLGMap(LocToGlbMapping)
-        PcLocalMatrix=PETSc.Mat().createPython(self.sizeOfLocalMatrix, comm=MPI.COMM_SELF)
+        Pc.setLGMap(LocToGlbMapping[0],LocToGlbMapping[0])
+        PcLocalMatrix=PETSc.Mat().createPython(self.sizeOfLocalMatrix[0], comm=MPI.COMM_SELF)
         PcLocalMatrix.setPythonContext(PCLocalMatrixCtx(self.BaseSolver,self.alpha))
         PcLocalMatrix.setUp()
         Pc.setISLocalMat(PcLocalMatrix)
@@ -319,33 +324,60 @@ class MultiPreconditionedCG:
         # srDirMatrix.assemble()
         return SrDirMatCtx
 
+    def solveMat(self,ParMatToSolve,KspSolver,srDirMatCtx,ResMat):
+        """
+        solves a linear system with sequential square matrix as operator and a parallel Matrix as RHS
+        
+        """
+        rowNbr,colNbr=ParMatToSolve.getSize()
+        for idx in range(colNbr):
+            Seqvec=srDirMatCtx.shareLocalVec(ParMatToSolve.getColumnVector(idx),mode="reverse")
+            KspSolver.solve(Seqvec,Seqvec)
+            ResMat.setValues(np.arange(0,rowNbr,dtype=np.int32),[idx],Seqvec.getArray()[:])
+        ResMat.assemble()
+
+    def updateSrDirMat(self,SrDirMat,SrDirMati,coeffSeqMat,srDirMatCtx):
+        """
+        remove from W its components on span(Wi) with respect to scalar product of F
+        """
+        ncol=coeffSeqMat.getSize()[1]
+    
+        for idx in range(ncol):
+            multResParVec=SrDirMati.getVecLeft()
+            SrDirMati.mult(srDirMatCtx.shareLocalVec(coeffSeqMat.getColumnVector(idx)),multResParVec)
+            start,end=multResParVec.getOwnershipRange()
+            SrDirMat.setValues(np.arange(start,end,dtype=np.int32),[idx],
+                            -multResParVec.getArray()[:],addv=True)
+        SrDirMat.assemble()
+        # SrDirMat.transposeMatMult(self.GlbMatrix.matMult(SrDirMati)).view()
+
     def Orthogonolize(self,lastSrDirMat,
-                listOfQMats,lisfOfSrDirMats,listOfDeltaMatKSPs):
+                listOfQMats,lisfOfSrDirMats,listOfDeltaMatKSPs, srDirMatCtx):
         """
         Do the full Orthonolization process 
         """
         iterNbr=len(listOfDeltaMatKSPs)
         # Results matrix Shape has to be  changed for optimized non singular versions of SrDirMats
         tempSrDirMat=lastSrDirMat.duplicate()
-        tempDeltaMat=listOfDeltaMatKSPs[0].duplicate()
+        tempDeltaMat=listOfDeltaMatKSPs[0].getOperators()[0].duplicate()
+        
         for i in range(iterNbr):
-            listOfQMats[i].matTransposeMult(lisfOfSrDirMats[i],tempDeltaMat)
-            listOfDeltaMatKSPs[i].matsolve(tempDeltaMat,tempDeltaMat)
-            lisfOfSrDirMats[i].matMult(tempDeltaMat,tempSrDirMat)
-            lastSrDirMat.axpy(-1,tempSrDirMat)
+            self.solveMat(listOfQMats[i].transposeMatMult(lastSrDirMat),
+                            listOfDeltaMatKSPs[i],srDirMatCtx,tempDeltaMat)
+            self.updateSrDirMat(lastSrDirMat,lisfOfSrDirMats[i],tempDeltaMat,srDirMatCtx)
 
     def lastError(self,srDirMatrix,ResidualVec):
-        tempVec=srDirMatrix.getVecRight()
-        tempVec.getArray()[:]=[1]
-        srDirMatrix.mult(tempVec,tempVec)
+        tempVec=self.PcIsMatrix.getVecRight()
+        self.PcIsMatrix.mult(ResidualVec,tempVec)
+        # destroy the two vectors
         return np.sqrt(tempVec.dot(ResidualVec))
-    
+
     def Solve(self,PetscSolVec,PetscRhsVec,tol):
         
         ResidualVec=PetscRhsVec.duplicate()
-        PetscSolVec.getArray()[:]=- PetscSolVec.getArray()[:]
+        # PetscSolVec.getArray()[:]=- PetscSolVec.getArray()[:]
         listOfDeltaMatKSPs,listOfsrDirMats,listOfQMats=[],[],[]
-        self.GlbMatrix.multAdd(PetscSolVec,PetscRhsVec,ResidualVec)
+        self.GlbMatrix.multAdd(-PetscSolVec,PetscRhsVec,ResidualVec)
         PetscSolVec.zeroEntries()
         srDirMatCtx=self.buildsrDirMatrixCtx(ResidualVec)
         srDirMat=srDirMatCtx.getSrDirMat()
@@ -353,7 +385,8 @@ class MultiPreconditionedCG:
         deltaMatCtx=DeltaMatrixCtx(srDirMat,self.GlbMatrix,srDirMatCtx)
         gammaVecSeq=PETSc.Vec().createSeq(self.SdNumber)
         gammaVecPar=PETSc.Vec().createMPI(self.SdNumber,comm=MPI.COMM_WORLD)
-        
+        itNbr=0
+
         while self.lastError(srDirMat,ResidualVec)>tol:
             QSeqMat=deltaMatCtx.getQSeqMat()
             listOfQMats.append(QSeqMat)
@@ -364,11 +397,15 @@ class MultiPreconditionedCG:
             deltaMatKSP.solve(gammaVecSeq,gammaVecSeq)
             gammaVecPar=srDirMatCtx.shareLocalVec(gammaVecSeq,mode="forward")
             srDirMat.multAdd(gammaVecPar,PetscSolVec,PetscSolVec)
+            # F prod Result must have same parallel layout as ResVec
             QSeqMat.multAdd(-gammaVecPar,ResidualVec,ResidualVec)
             srDirMatCtx.update(ResidualVec)
             srDirMat=srDirMatCtx.getSrDirMat()
-            self.Orthogonolize()
+            self.Orthogonolize(srDirMat,listOfQMats,listOfsrDirMats,listOfDeltaMatKSPs,srDirMatCtx)
             deltaMatCtx.update(srDirMat,srDirMatCtx)
+            listOfsrDirMats.append(srDirMat)
+            itNbr+=1
+        print("l'algo a convergé dans ",itNbr,"itérations")
 
 class DeltaMatrixCtx:
     
@@ -405,8 +442,8 @@ class DeltaMatrixCtx:
         """
         build for each subdomain its own explicit version of matrix W^t F W and matrix Q= F W
         """
-        deltaMat=PETSc.Mat().createDense(self.sdNbr,comm=MPI.COMM_SELF)
-        QMat=PETSc.Mat().createDense((self.glbSize, self.sdNbr),comm=MPI.COMM_SELF)
+        deltaMat=PETSc.Mat().createAIJ(self.sdNbr,comm=MPI.COMM_SELF)
+        QMat=PETSc.Mat().createDense((self.glbSize,self.sdNbr),comm=MPI.COMM_WORLD)
         deltaMat.setUp()
         QMat.setUp()
         basisElementi=PETSc.Vec().createMPI(size=self.sdNbr,comm=MPI.COMM_WORLD)
@@ -417,14 +454,15 @@ class DeltaMatrixCtx:
             tempVec1,tempVec2=self.srDirMat.getVecLeft(),self.GlbIsMatrix.getVecLeft()
             self.srDirMat.mult(basisElementi,tempVec1)
             self.GlbIsMatrix.mult(tempVec1,tempVec2)
-            QMat.setValues(np.arange(0,self.glbSize,dtype=np.int32),[i],
-                            self.srDirMatCtx.shareLocalVec(tempVec2,mode="reverse").getArray()[:])
+            start,end=tempVec2.getOwnershipRange()
+            QMat.setValues(np.arange(start,end,dtype=np.int32),[i],
+                                tempVec2.getArray()[:])
             self.srDirMat.multTranspose(tempVec2,basisElementi)
             deltaMat.setValues(np.arange(0,self.sdNbr,dtype=np.int32),[i],
                             self.srDirMatCtx.shareLocalVec(basisElementi,mode="reverse").getArray()[:])
         deltaMat.assemble()
         QMat.assemble()
-        deltaMat.view()
+        # deltaMat.view()
         return deltaMat,QMat
         
     def buildLocalKSP(self):
@@ -432,10 +470,13 @@ class DeltaMatrixCtx:
         Build local solver for matrix W^T F W
         """
         PetscKsp = PETSc.KSP()
-        PetscKsp.create(PETSc.COMM_SELF)
-        deltaAsSparseMat=PETSc.Mat().createAIJ(self.deltaSeqMat.getSize(), comm=MPI.COMM_SELF)
-        self.deltaSeqMat.convert(PETSc.Mat.Type.AIJ,deltaAsSparseMat)
-        PetscKsp.setOperators(deltaAsSparseMat)
+        PetscKsp.create(MPI.COMM_SELF)
+        # deltaAsSparseMat=PETSc.Mat().createAIJ(self.deltaSeqMat.getSize(), comm=MPI.COMM_SELF)
+        # deltaAsSparseMat.setUp()
+        # deltaAsSparseMat.assemble()
+        # self.deltaSeqMat.convert(PETSc.Mat.Type.AIJ,deltaAsSparseMat)
+        # deltaAsSparseMat.view()
+        PetscKsp.setOperators(self.deltaSeqMat)
         PetscKsp.setType('preonly')
         PetscPc = PetscKsp.getPC()
         PetscPc.setType('lu')

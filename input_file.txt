@@ -1,5 +1,5 @@
 nombre de noeuds total
-10
+300
 nombre de sous domaines
 5
 température à gauche
