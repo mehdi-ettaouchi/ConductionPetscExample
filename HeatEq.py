@@ -1,14 +1,6 @@
-from lib2to3.pytree import convert
-from math import perm
-from pipes import Template
-from re import I, search
-from statistics import mode
-from traceback import print_tb
-from tracemalloc import DomainFilter
-from defer import return_value
+
 import numpy as np
 from mpi4py import MPI
-from pyparsing import col
 from petsc4py import PETSc
 import sys
 import petsc4py
@@ -169,28 +161,28 @@ class HeatEqSolver:
     def writeSolution(self):
         ibegin=self.rank*self.sdSize
     
-    def saveSolution(self):
-        solArray=self.Sol.getArray()
-        rank=self.getProcId()
-        Tfile=open(f"T{rank}.txt","w")
-        print("number of Sd ;",self.sdSize)
-        for i in range(self.sdSize):
-            Tfile.write(str(solArray[i])+"\n")
-        Tfile.close()
+    # def saveSolution(self):
+    #     solArray=self.Sol.getArray()
+    #     rank=self.getProcId()
+    #     Tfile=open(f"T{rank}.txt","w")
+    #     print("number of Sd ;",self.sdSize)
+    #     for i in range(self.sdSize):
+    #         Tfile.write(str(solArray[i])+"\n")
+    #     Tfile.close()
     
-    def showSolution(self):
-        heatMapList=[]
-        if self.getProcId()==0:
-            for i in range(self.NumberOfSd):
-                Tfile=open(f"T{i}.txt",'r')
-                heatMapListOfValues=[]
-                for j in range(self.sdSize):
-                    heatMapListOfValues.append(float(Tfile.readline()))
-                Tfile.close()
-                heatMapList.append(heatMapListOfValues)
-            plt.imshow(heatMapList, cmap='viridis')
-            plt.colorbar()
-            plt.savefig('heatmap')
+    # def showSolution(self):
+    #     heatMapList=[]
+    #     if self.getProcId()==0:
+    #         for i in range(self.NumberOfSd):
+    #             Tfile=open(f"T{i}.txt",'r')
+    #             heatMapListOfValues=[]
+    #             for j in range(self.sdSize):
+    #                 heatMapListOfValues.append(float(Tfile.readline()))
+    #             Tfile.close()
+    #             heatMapList.append(heatMapListOfValues)
+    #         plt.imshow(heatMapList, cmap='viridis')
+    #         plt.colorbar()
+    #         plt.savefig('heatmap')
 
     def testICCFactorMethod(self):
         permIS=PETSc.IS().createGeneral(np.arange(self.DomainSize,dtype=np.int32))
@@ -588,7 +580,7 @@ class SearchDirectionsLocMatrixCtx:
             return OwnedVec
         
         else :
-            raise RuntimeError(f"There is no mode called {mode}: try with 'forward' or 'reverse'")
+            raise RuntimeError("There is no mode called {mode}: try with 'forward' or 'reverse'")
 
     def computeSdSearchDirection(self):
         #------ To optimize if colIndices and rowIndices are the same ------------
