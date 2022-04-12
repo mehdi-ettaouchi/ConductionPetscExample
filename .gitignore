@@ -1,0 +1,7 @@
+# ignore notes taken for costly functions
+Notes
+Prod_test.py
+findPath.py
+*.txt
+/petscUsefulCommands
+/__pycache__
